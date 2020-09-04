@@ -3,6 +3,7 @@ use std::task::{Context, Poll};
 use std::{fmt, io};
 
 use bytes::{Buf, BytesMut};
+use either::Either;
 use futures_core::{ready, Stream};
 use futures_sink::Sink;
 
@@ -250,7 +251,7 @@ where
     }
 
     /// Flush write buffer to underlying I/O stream.
-    pub fn flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), U::Error>> {
+    pub fn flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         log::trace!("flushing framed transport");
 
         let len = self.write_buf.len();
@@ -269,8 +270,7 @@ where
                         return Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::WriteZero,
                             "failed to write frame to transport",
-                        )
-                        .into()));
+                        )));
                     } else {
                         written += n
                     }
@@ -278,7 +278,7 @@ where
                 Poll::Ready(Err(e)) => {
                     log::trace!("Error during flush: {}", e);
                     self.flags.insert(Flags::DISCONNECTED);
-                    return Poll::Ready(Err(e.into()));
+                    return Poll::Ready(Err(e));
                 }
             }
         }
@@ -339,16 +339,16 @@ where
     }
 }
 
+pub type ItemType<U> =
+    Result<<U as Decoder>::Item, Either<<U as Decoder>::Error, io::Error>>;
+
 impl<T, U> Framed<T, U>
 where
     T: AsyncRead + Unpin,
     U: Decoder,
 {
     /// Try to read underlying I/O stream and decode item.
-    pub fn next_item(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<U::Item, U::Error>>> {
+    pub fn next_item(&mut self, cx: &mut Context<'_>) -> Poll<Option<ItemType<U>>> {
         let mut done_read = false;
 
         loop {
@@ -364,12 +364,17 @@ where
                         Ok(Some(frame)) => Poll::Ready(Some(Ok(frame))),
                         Ok(None) => {
                             if let Some(err) = self.err.take() {
-                                Poll::Ready(Some(Err(err.into())))
+                                Poll::Ready(Some(Err(Either::Right(err))))
+                            } else if !self.read_buf.is_empty() {
+                                Poll::Ready(Some(Err(Either::Right(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    "bytes remaining on stream",
+                                )))))
                             } else {
                                 Poll::Ready(None)
                             }
                         }
-                        Err(e) => return Poll::Ready(Some(Err(e))),
+                        Err(e) => return Poll::Ready(Some(Err(Either::Left(e)))),
                     };
                 }
 
@@ -380,7 +385,7 @@ where
                         log::trace!("frame decoded from buffer");
                         return Poll::Ready(Some(Ok(frame)));
                     }
-                    Err(e) => return Poll::Ready(Some(Err(e))),
+                    Err(e) => return Poll::Ready(Some(Err(Either::Left(e)))),
                     _ => (), // Need more data
                 }
 
@@ -428,7 +433,7 @@ where
                             self.flags.insert(Flags::EOF | Flags::READABLE);
                             break;
                         } else {
-                            return Poll::Ready(Some(Err(e.into())));
+                            return Poll::Ready(Some(Err(Either::Right(e))));
                         }
                     }
                 }
@@ -442,7 +447,7 @@ where
     T: AsyncRead + Unpin,
     U: Decoder + Unpin,
 {
-    type Item = Result<U::Item, U::Error>;
+    type Item = Result<U::Item, Either<U::Error, io::Error>>;
 
     #[inline]
     fn poll_next(
@@ -457,9 +462,8 @@ impl<T, U> Sink<U::Item> for Framed<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Unpin,
-    U::Error: From<io::Error>,
 {
-    type Error = U::Error;
+    type Error = Either<U::Error, io::Error>;
 
     #[inline]
     fn poll_ready(
@@ -478,7 +482,7 @@ where
         mut self: Pin<&mut Self>,
         item: <U as Encoder>::Item,
     ) -> Result<(), Self::Error> {
-        self.write(item)
+        self.write(item).map_err(Either::Left)
     }
 
     #[inline]
@@ -486,7 +490,7 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        self.flush(cx)
+        self.flush(cx).map_err(Either::Right)
     }
 
     #[inline]
@@ -494,7 +498,7 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        self.close(cx).map_err(|e| e.into())
+        self.close(cx).map_err(Either::Right)
     }
 }
 
