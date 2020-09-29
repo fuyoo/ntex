@@ -1,5 +1,15 @@
 # Changes
 
+## [0.1.24] - 2020-09-22
+
+* Fix ws::stream::StreamDecoder, decodes buffer before reading from io #27
+
+* Drop deprecated ntex::framed mod
+
+## [0.1.23] - 2020-09-04
+
+* Fix http1 pipeline requests with payload handling
+
 ## [0.1.22] - 2020-08-27
 
 * Wake http client connection pool support future on drop, prevents memory leak.
