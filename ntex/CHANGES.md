@@ -1,5 +1,13 @@
 # Changes
 
+## [0.1.25] - 2020-11-30
+
+* Better names for Variant service
+
+* Add Debug impl for FrozenClientRequest
+
+* Add mpsc::WeakSender<T> type
+
 ## [0.1.24] - 2020-09-22
 
 * Fix ws::stream::StreamDecoder, decodes buffer before reading from io #27
